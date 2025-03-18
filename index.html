@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="it">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>iCalendar to CSV</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luxon@3.0.3/build/global/luxon.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ical.js/1.4.0/ical.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2.1.1/css/pico.classless.min.css">
+</head>
+
+<body>
+    <header>
+        <h1>iCalendar to CSV Converter</h1>
+        <ol>
+            <li>Fare un export da Google Calendar di un calendario</li>
+            <li>Su questa pagina, premere su "Scegli file" e scegliere l'export scaricato</li>
+            <li>Premere su "Convert to CSV". Questo salverà un file csv nella cartella Download</li>
+            <li>I file CSV sono file che possono essere aperti con Excel o programmi equivalenti</li>
+        </ol>
+        <strong>Questo programma elabora i dati all'interno del browser e NON manda i dati a nessun server</strong>
+        <hr>
+    </header>
+
+    <main>
+        <fieldset>
+            <label for="fileInput">File ics:</label>
+            <input type="file" id="fileInput" accept=".ics">
+        </fieldset>
+        <button onclick="convertToCSV()">Converti in CSV</button>
+        <br><br>
+    
+        <a id="downloadLink" style="display:none;" download="calendar.csv">Download CSV</a>
+
+    </main>
+
+    <script>
+        var DateTime = luxon.DateTime;
+        function convertToCSV() {
+            const fileInput = document.getElementById('fileInput');
+            const file = fileInput.files[0];
+            if (!file) {
+                alert('Please select an iCalendar (.ics) file');
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = function (e) {
+                const icsData = e.target.result;
+                const events = parseICS(icsData);
+                const csvData = convertEventsToCSV(events);
+                downloadCSV(csvData);
+            };
+            reader.readAsText(file);
+        }
+
+        function parseICS(icsData) {
+            const events = [];
+            const jCalData = ICAL.parse(icsData);
+            const comp = new ICAL.Component(jCalData);
+
+            comp.getAllSubcomponents('vevent').forEach((vevent) => {
+                const event = {};
+                const e = new ICAL.Event(vevent);
+                let rrule = vevent.getFirstPropertyValue('rrule');
+
+                if (rrule) {
+                    let recurringEvents = handleNewRecurring(vevent);
+                    recurringEvents.forEach(function (event) {
+                        events.push(event);
+                    });
+                } else {
+                    event.summary = e.summary || 'MANCA TITOLO';
+                    event.description = e.description || '';
+                    event.description.replace('<br>', '\n');
+                    event.description = stripHtml(event.description);
+
+                    event.location = e.location || '';
+
+                    event.start = parseDateTime(e.startDate); // Handle both date and time
+                    event.end = parseDateTime(e.endDate); // Handle both date and time
+
+                    event.recurring = '';
+
+                    events.push(event);
+
+                }
+
+            });
+
+
+            return events;
+        }
+
+        function handleNewRecurring(vevent) {
+
+            const e = new ICAL.Event(vevent);
+
+            let expand = new ICAL.RecurExpansion({
+                component: vevent,
+                dtstart: vevent.getFirstPropertyValue('dtstart')
+            });
+
+            let rangeStart = ICAL.Time.fromString("2000-01-01T00:00:00");
+            let rangeEnd = new ICAL.Time.fromJSDate(new Date());
+
+            let events = [];
+            for (let next = expand.next(); next && next.compare(rangeEnd) < 0; next = expand.next()) {
+                if (next.compare(rangeStart) < 0) {
+                    continue;
+                }
+                let event = {};
+                let occurrence = e.getOccurrenceDetails(next);
+                event.summary = occurrence.item.summary || 'MANCA TITOLO';
+                event.description = occurrence.item.description || '';
+                event.description.replace('<br>', '\n');
+                event.description = stripHtml(event.description);
+
+                event.location = occurrence.item.location || '';
+
+                event.start = parseDateTime(occurrence.startDate);
+                event.end = parseDateTime(occurrence.endDate);
+
+                event.recurring = 'recurring';
+
+                events.push(event);
+            }
+            return events;
+        }
+
+        // Handle the date-time parsing (date or date-time with TZID or UTC)
+        function parseDateTime(dateTime) {
+            const localTime = DateTime.fromISO(dateTime.toString(), { zone: 'utc' }).toLocal();
+            if (dateTime.isDate) {
+                // All-day event (no time)
+                return {
+                    date: localTime.toFormat("yyyy-MM-dd"),
+                    time: ''
+                };
+            } else {
+                // Event with time
+                return {
+                    date: localTime.toFormat("yyyy-MM-dd"),
+                    time: localTime.toFormat("HH:mm:ss")
+                };
+            }
+        }
+
+        function convertEventsToCSV(events) {
+            const headers = ['Evento', 'Data inizio', 'Ora inizio', 'Data fine', 'Ora fine', 'Luogo', 'Descrizione', 'Recurring'];
+            const csvRows = [];
+            csvRows.push(headers);
+
+            events.forEach(event => {
+                const row = [
+                    event.summary,
+                    event.start.date,
+                    event.start.time,
+                    event.end.date,
+                    event.end.time,
+                    event.location,
+                    event.description,
+                    event.recurring,
+                ];
+
+                csvRows.push(row);
+            });
+
+            // Generate CSV using PapaParse
+            return Papa.unparse(csvRows, { delimiter: ";" });
+        }
+
+        // Function to trigger CSV download
+        function downloadCSV(csvData) {
+            const downloadLink = document.getElementById('downloadLink');
+            const blob = new Blob([csvData], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            downloadLink.href = url;
+            downloadLink.style.display = 'inline-block';
+            downloadLink.click();
+        }
+
+        function stripHtml(html) {
+            // Togliamo HTML da eventi per leggibilità
+            let tmp = document.createElement("DIV");
+            tmp.innerHTML = html;
+            return tmp.textContent || tmp.innerText || "";
+        }
+    </script>
+</body>
+
+</html>
